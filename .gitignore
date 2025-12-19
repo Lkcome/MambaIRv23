@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+experiments23.zip
+*.whl
+*.zip
