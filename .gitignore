@@ -12,3 +12,4 @@ __pycache__/
 experiments23.zip
 *.whl
 *.zip
+*.tfevents*
