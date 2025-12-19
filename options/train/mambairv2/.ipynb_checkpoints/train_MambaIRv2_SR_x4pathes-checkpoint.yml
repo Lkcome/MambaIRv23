@@ -1,0 +1,143 @@
+# general settings for image SR training
+name: MambaIRv2_SR_x4
+model_type: MambaIRv2Model
+scale: 4
+num_gpu: 1
+manual_seed: 10
+
+# dataset and data loader settings
+datasets:
+  train:
+    task: SR
+    name: DuKe photoacoustic microscopy datasets
+    # Nature_PACT_datasets
+    type: PairedImageDataset
+    dataroot_gt:
+      - /root/autodl-tmp/mambaIR2/MambaIR/datasets/Duke_PAM_datasets_xy/train/HR
+    dataroot_lq:
+      - /root/autodl-tmp/mambaIR2/MambaIR/datasets/Duke_PAM_datasets_xy/train/LR_S4
+      #
+    filename_tmpl: '{}_pam44'
+    #'{}x4'
+    io_backend:
+      type: disk
+
+    gt_size: 128 #192
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 16
+    batch_size_per_gpu: 8
+    dataset_enlarge_ratio: 100
+    prefetch_mode: ~
+
+  val:
+    name: DuKe photoacoustic microscopy datasets
+    type: PairedImageDataset
+    dataroot_gt: /root/autodl-tmp/mambaIR2/MambaIR/datasets/Duke_PAM_datasets_xy/valid/HR
+    #
+    dataroot_lq: /root/autodl-tmp/mambaIR2/MambaIR/datasets/Duke_PAM_datasets_xy/valid/LR_S4
+    #
+    filename_tmpl: '{}_pam44'
+    #'{}x4'
+    io_backend:
+      type: disk
+
+
+# network structures
+network_g:
+  type: MambaIRv2
+  upscale: 4
+  in_chans: 3
+  img_size: 64
+  img_range: 1.
+  embed_dim: 174
+  d_state: 16
+  depths: [6, 6, 6,6,6,6]
+  num_heads: [6,6,6,6,6,6]
+  window_size: 16
+  inner_rank: 64
+  num_tokens: 128
+  convffn_kernel_size: 5
+  mlp_ratio: 2.
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'
+  
+  # === 新增：双扫描配置 ===
+  dual_scan: true
+  use_guidance: true
+  scan_opts:
+    stripe: 8
+    kappa: 1.0
+    block_base: 8
+    ds: 2
+    interleave: [3, 1]
+    steps: 3
+    #fusion:temporal
+    #fuse: [2, 1]               # 融合节奏：2步 CSH + 1步 RACS（控制“时域交错”融合）
+
+
+# path
+path:
+  pretrain_network_g: /root/autodl-tmp/mambaIR2/MambaIR/experiments/pretrained_models/mambairv2_classicSR_Base_x4.pth
+  #/root/autodl-tmp/mambaIR2/MambaIR/experiments/MambaIRv2_SR_x2/models/net_g_60000.pth
+  strict_load_g: false
+  resume_state: ~
+
+
+# training settings
+train:
+  optim_g:
+    type: Adam
+    # lr: !!float 2e-4
+    lr: !!float 1e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [ 250000, 400000, 450000, 475000 ]
+    #milestones: [ 125000, 200000, 225000, 237500 ]
+    gamma: 0.5
+
+  total_iter: 500000
+  #total_iter: 250000
+  warmup_iter: -1  # no warm up
+
+  # losses
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+# validation settings
+val:
+  val_freq: !!float 5e3
+  save_img: true
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: true
+    ssim:  # 添加这一项
+        type: calculate_ssim
+        crop_border: 4
+        test_y_channel: True
+
+
+
+# logging settings
+logger:
+  print_freq: 200
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500

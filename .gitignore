@@ -1,0 +1,11 @@
+# 忽略巨大的权重和日志文件夹
+experiments/
+
+# 忽略数据集文件夹
+datasets/
+
+# 忽略 Python 缓存和系统文件
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/

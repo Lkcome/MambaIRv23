@@ -1,0 +1,88 @@
+# basicsr/data/mat_paired_dataset.py
+import os
+import glob
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from scipy.io import loadmat
+from basicsr.utils.registry import DATASET_REGISTRY
+
+def minmax_norm(x, eps=1e-8):
+    x = x.astype(np.float32)
+    lo, hi = np.percentile(x, 1), np.percentile(x, 99)
+    x = np.clip((x - lo) / (hi - lo + eps), 0.0, 1.0)
+    return x
+
+@DATASET_REGISTRY.register()
+class MatPairedDataset(Dataset):
+    """
+    必填 YAML 字段：
+      type: MatPairedDataset
+      name: <任意>
+      phase: train | val
+      dataroot_lq: /path/to/<split>/input_mat
+      dataroot_gt: /path/to/<split>/target_mat
+      input_key: artefactual
+      target_key: groundtruth
+      # train 阶段可选
+      use_hflip: true/false
+      use_rot: true/false
+      gt_size: 192
+    """
+    def __init__(self, opt):
+        super().__init__()
+        self.phase = opt.get('phase', 'train')
+        in_root = opt['dataroot_lq']
+        gt_root = opt['dataroot_gt']
+        in_roots = in_root if isinstance(in_root, list) else [in_root]
+        gt_roots = gt_root if isinstance(gt_root, list) else [gt_root]
+        self.ikey = opt.get('input_key', 'artefactual')
+        self.gkey = opt.get('target_key', 'groundtruth')
+
+        self.files = []
+        for idr, gdr in zip(in_roots, gt_roots):
+            for f in sorted(glob.glob(os.path.join(idr, '*.mat'))):
+                base = os.path.basename(f)
+                gtf = os.path.join(gdr, base)
+                if os.path.isfile(gtf):
+                    self.files.append((f, gtf))
+        if not self.files:
+            raise RuntimeError(f'No paired .mat found under {in_roots} & {gt_roots}')
+
+        is_train = (self.phase == 'train')
+        self.use_hflip = bool(opt.get('use_hflip', False)) if is_train else False
+        self.use_rot   = bool(opt.get('use_rot', False))   if is_train else False
+        self.gt_size   = opt.get('gt_size', None)          if is_train else None
+
+    def __len__(self): return len(self.files)
+
+    def _read(self, f, key):
+        d = loadmat(f)
+        if key not in d:
+            raise KeyError(f"Key '{key}' not found in {f}. keys={list(d.keys())[:10]}")
+        x = d[key]
+        if x.ndim == 3: x = x.squeeze()
+        x = minmax_norm(x)         # [0,1]
+        x = x[None, ...]           # (1,H,W)
+        return torch.from_numpy(x.astype(np.float32))
+
+    def _crop(self, a, b, s):
+        if s is None: return a, b
+        _, H, W = a.shape
+        if H < s or W < s: return a, b
+        t = np.random.randint(0, H - s + 1); l = np.random.randint(0, W - s + 1)
+        return a[:, t:t+s, l:l+s], b[:, t:t+s, l:l+s]
+
+    def _aug(self, a, b):
+        if self.use_hflip and np.random.rand() < 0.5:
+            a = torch.flip(a, [2]); b = torch.flip(b, [2])
+        if self.use_rot and np.random.rand() < 0.5:
+            a = torch.rot90(a, 1, [1,2]); b = torch.rot90(b, 1, [1,2])
+        return a, b
+
+    def __getitem__(self, i):
+        fin, fgt = self.files[i]
+        lq, gt = self._read(fin, self.ikey), self._read(fgt, self.gkey)
+        lq, gt = self._crop(lq, gt, self.gt_size)
+        lq, gt = self._aug(lq, gt)
+        return {'lq': lq, 'gt': gt, 'lq_path': fin, 'gt_path': fgt}

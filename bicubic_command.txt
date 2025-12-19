@@ -1,0 +1,4 @@
+#python script.py --hr_dir ./datasets/4042171/raw_train --out_root ./datasets --auto_pad
+#python script.py --hr_dir ./datasets/4042171/raw_train --out_root ./datasets --auto_crop
+
+python downsample_images.py ./datasets/4042171/raw_train ./datasets/duke_bic

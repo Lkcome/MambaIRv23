@@ -1,0 +1,76 @@
+Train on SR：
+# Claissc SR task (Base model as default), cropped input=64×64, 8 GPUs, batch size=4 per GPU
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SR_x2.yml --launcher pytorch
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SR_x3.yml --launcher pytorch
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SR_x4.yml --launcher pytorch
+(python basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SR_x4.yml)
+
+Test on SR：
+# test for image SR (we use the Base model as default). 
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_SR_x2.yml
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_SR_x3.yml
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_SR_x4.yml
+
+# if you want to test our Small or Large model, you can use the following command
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_SRSmall_x4.yml
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_SRLarge_x4.yml
+
+
+# test for lightweight image SR. 
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_lightSR_x2.yml
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_lightSR_x3.yml
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_lightSR_x4.yml
+
+
+
+# for training our Small or Large model, use the following command
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SRSmall_x4.yml --launcher pytorch
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=1234 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_SRLarge_x4.yml --launcher pytorch
+
+
+
+
+
+Train on Gaussian Color Image Denosing：
+# train on denosing15
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=2414 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_ColorDN_level15.yml --launcher pytorch
+
+Test on Gaussian Color Image Denoising：
+# test on denosing15
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_ColorDN_level15.yml
+
+
+
+
+
+Train on JPEG Compression Artifact Reduction：
+# train on jpeg10
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=2414 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_CAR_q10.yml --launcher pytorch
+
+# train on jpeg30
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=2414 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_CAR_q30.yml --launcher pytorch
+
+# train on jpeg40
+python -m torch.distributed.launch --nproc_per_node=8 --master_port=2414 basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_CAR_q40.yml --launcher pytorch
+(python basicsr/train.py -opt options/train/mambairv2/train_MambaIRv2_CAR_q40.yml)
+
+Test on JPEG Compression Artifact Reduction：
+# test on jpeg10
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_CAR_q10.yml
+
+# test on jpeg30
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_CAR_q30.yml
+
+# test on jpeg40
+python basicsr/test.py -opt options/test/mambairv2/test_MambaIRv2_CAR_q40.yml
+
+
+
+
+下采样
+python downsample_images.py \
+/root/autodl-tmp/mambaIR2/MambaIR/datasets/9250784_png\(question\)/Sparse_32/valid_bic/HR/X1 \
+/root/autodl-tmp/mambaIR2/MambaIR/datasets/mice_full_down/valid
+
+图像恢复训练命令
+python basicsr/train.py -opt options/train/mambairv2/train_OAT_Sparse_32.yml
