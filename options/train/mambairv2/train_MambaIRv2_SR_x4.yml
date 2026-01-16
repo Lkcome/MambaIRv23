@@ -88,7 +88,7 @@ path:
   pretrain_network_g: /data1/like/MambaIRv21/experiments/pretrained_models/mambairv2_classicSR_Base_x4.pth
   #/root/autodl-tmp/mambaIR2/MambaIR/experiments/MambaIRv2_SR_x2/models/net_g_60000.pth
   strict_load_g: false
-  resume_state: /data1/like/MambaIRv23/experiments/MambaIRv2_SR_x4/training_states/190000.state
+  resume_state: ~
 
 
 # training settings

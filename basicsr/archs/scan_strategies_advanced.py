@@ -131,33 +131,16 @@ def _hilbert_curve_coords(n):
         coords.append((y, x))
     return coords
 
-def _tile_hilbert_indices(H, W, block=8):
-    """
-    将 Hilbert 次序平铺到 H×W（块大小 block），返回线性索引序列（长度≈H*W）。
-    """
-    pow2 = 1 << (block - 1).bit_length()
-    hilb = _hilbert_curve_coords(pow2)
-
-    order = []
-    for by in range(0, H, block):
-        for bx in range(0, W, block):
-            for (iy, ix) in hilb:
-                if pow2 != block:
-                    ix = int(ix * (block - 1) / (pow2 - 1))
-                    iy = int(iy * (block - 1) / (pow2 - 1))
-                y, x = by + iy, bx + ix
-                if 0 <= y < H and 0 <= x < W:
-                    order.append(_linear_index(y, x, W))
-    return order
 
 # ----------------------------
 # 1) CSH：曲线条带 + Hilbert 子块 + 坏处加密
 # ----------------------------
 @torch.no_grad()
-def build_csh_indices(H, W, theta, D, stripe=8, kappa=1.0, block_base=8, device="cpu"):
+def build_csh_indices(H, W, theta, D, stripe=8, kappa=1.0, block_base=8, shift=0, device="cpu"):
     """
     theta: (B,H,W), D: (B,H,W)；输出 idx (H*W,)
     条带内 S 形，行偏移随 θ 微调；子块采用 Hilbert；坏处区域使用更小子块（加密）。
+    新增参数: shift (int): 条带起始位置的垂直偏移量 (通常为 stripe//2)
     """
     theta = theta.mean(dim=0)   # (H,W)
     D = D.mean(dim=0)           # (H,W)
@@ -180,30 +163,46 @@ def build_csh_indices(H, W, theta, D, stripe=8, kappa=1.0, block_base=8, device=
         return out
 
     def local_block(y0, y1):
+        # 简单的自适应：如果区域平均 D 很小（质量好），用大块；否则用小块
         d_local = D[y0:y1].mean()
         return block_base if d_local < 0.5 else max(4, block_base // 2)
 
     order=[]
-    for sy in range(0, H, stripe):
-        rows = list(range(sy, min(sy + stripe, H)))
-        blk = local_block(sy, min(sy + stripe, H))
-        hb = hilbert_block_coords(blk)
 
-        for bx in range(0, W, blk):
-            sub_cols = []
-            for (iy, ix) in hb:
-                x = bx + ix
-                if x < W:
-                    sub_cols.append(x)
-            for rid, y in enumerate(rows):
-                off = int(offsets[y].item())
-                cols = sub_cols.copy()
-                cols = cols[off % W:] + cols[:off % W]
-                if (y - sy) % 2 == 1:
-                    cols = list(reversed(cols))
-                for x in cols:
-                    order.append(_linear_index(y, x, W))
+    # === [修改处] === 支持 Shift 的循环逻辑
+    # 如果 shift>0，起始点从负数开始 (例如 -4)，这样第一个条带就是 [-4, 4)，
+    # 裁剪到图像内变成 [0, 4)，从而实现交错。
+    start_sy = -shift
 
+    for sy in range(start_sy, H, stripe):
+            # 确定当前条带在图像内的有效行范围
+            y_min = max(0, sy)
+            y_max = min(H, sy + stripe)
+            
+            # 如果条带完全在图像外，跳过
+            if y_min >= y_max:
+                continue
+            # === [修改结束] ===
+
+            blk = local_block(y_min, y_max)
+            hb = hilbert_block_coords(blk)
+
+            # 遍历水平方向的块
+            for bx in range(0, W, blk):
+                # [关键修复] 直接遍历 Hilbert 坐标序列，保证 2D 局部性
+                for (iy, ix) in hb:
+                    y = sy + iy
+                    x_canonical = bx + ix
+                    
+                    # 边界检查 (Shift 导致 y 可能小于 0，Hilbert 导致 x 可能越界)
+                    if 0 <= y < H and 0 <= x_canonical < W:
+                        # 应用曲线偏移：将 "直线" 的 Hilbert 映射到 "弯曲" 的图像区域
+                        # 逻辑：我们在直的 Hilbert 空间游走，读取的是偏移后的图像像素
+                        off = int(offsets[y].item())
+                        x_img = (x_canonical + off) % W
+                        
+                        order.append(_linear_index(y, x_img, W))
+    # 去重并补齐 (鲁棒性兜底)
     seen = set()
     out = []
     for v in order:

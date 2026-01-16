@@ -274,6 +274,9 @@ class ASSM(nn.Module):
         })
 
         self.use_guidance = kwargs.get("use_guidance", True)
+
+        # [关键修改] 获取层索引，用于决定是否移位
+        self.scan_layer_idx = kwargs.get('scan_layer_idx', 0)
         
         if self.use_guidance:
             # 统一的可学习引导头: 输出 theta, D
@@ -393,16 +396,15 @@ class ASSM(nn.Module):
             # 未调试打印原版
             # === 2) 构造索引（动态：每 idx_update_interval 次更新一次；索引本身仍不可微） ===
             dynamic_idx = bool(self.scan_opts.get("dynamic_idx", True))
-            idx_update_interval = int(self.scan_opts.get("idx_update_interval", 200))
 
             # forward 计数
             self._fwd_count += 1
 
             # 是否需要重建
             rebuild = (self._idx1 is None) or (int(self._cache_hw[0].item()) != H) or (int(self._cache_hw[1].item()) != W)
-            if dynamic_idx and (idx_update_interval > 1):
-                rebuild = rebuild or (int(self._fwd_count.item()) % idx_update_interval == 0)
-            elif dynamic_idx and (idx_update_interval <= 1):
+            if dynamic_idx and (self.idx_update_interval > 1):
+                rebuild = rebuild or (int(self._fwd_count.item()) % self.idx_update_interval == 0)
+            elif dynamic_idx:
                 rebuild = True
 
             if rebuild:
@@ -410,12 +412,19 @@ class ASSM(nn.Module):
                 theta_idx = theta.detach().to("cpu")
                 D_idx     = D.detach().to("cpu")
 
+
+                # === [修改处] 计算 shift ===
+                stripe_width = self.scan_opts.get("stripe", 8)
+                # 奇数层进行移位，偶数层不移位
+                shift_val = (stripe_width // 2) if (self.scan_layer_idx % 2 != 0) else 0
+
                 idx1 = build_csh_indices(
                     H, W,
                     theta_idx, D_idx,
-                    stripe=self.scan_opts.get("stripe", 8),
+                    stripe=stripe_width,
                     kappa=self.scan_opts.get("kappa", 1.0),
                     block_base=self.scan_opts.get("block_base", 8),
+                    shift=shift_val,  # 传入 shift
                     device="cpu",
                 )
                 idx2 = build_racs_indices(
@@ -572,7 +581,6 @@ class ASSM(nn.Module):
                 # ===== [REPLACE] use cached fused indices =====
                 idx_fused_1d = self._idx_fused[0]                 # (N,) on GPU
                 src_1d = self._src_fused                          # (N,) on GPU
-                idx_fused = self._idx_fused.expand(B, -1)         # (B,N) view
                 inv_fused = self._inv_fused.expand(B, -1)         # (B,N) view
                 # ===== [REPLACE END] =====
                 N = idx_fused_1d.numel()
@@ -591,7 +599,7 @@ class ASSM(nn.Module):
                 mask = (src_1d.view(1, N, 1).expand(B, N, cc) == 1)
                 semantic_x = torch.where(mask, x_rac_fused, x_csh_fused)  # (B,N,C)
 
-                y = self.selectiveScan(semantic_x, prompt)
+                y = self.selectiveScan(semantic_x, prompt=None)
                 y = self.out_proj(self.out_norm(y))
                 x = semantic_neighbor(y, inv_fused)  # (B,N,C)
 
@@ -602,7 +610,7 @@ class ASSM(nn.Module):
                     self.mix_proj = torch.nn.Linear(cc * 2, cc).to(x.device)
                 semantic_x = self.mix_proj(torch.cat([x_csh, x_racs], dim=-1))  # (B,N,C)
                 #Selective Scan (保留 ASE 逻辑)
-                y = self.selectiveScan(semantic_x, prompt)
+                y = self.selectiveScan(semantic_x, prompt=None)
                 y = self.out_proj(self.out_norm(y))
                 # 用 CSH 的逆索引回折（通道融合下，序列顺序与 CSH 对齐）
                 x = semantic_neighbor(y, self._rev1.repeat(B, 1))
@@ -718,7 +726,7 @@ class Selective_Scan(nn.Module):
         D._no_weight_decay = True
         return D
 
-    def forward_core(self, x: torch.Tensor, prompt):
+    def forward_core(self, x: torch.Tensor, prompt = None):
         B, L, C = x.shape
         K = 1  # mambairV2 needs noly 1 scan
         xs = x.permute(0, 2, 1).view(B, 1, C, L).contiguous()  # B, 1, C ,L
@@ -730,7 +738,12 @@ class Selective_Scan(nn.Module):
         dts = dts.contiguous().float().view(B, -1, L)  # (b, k * d, l)
         Bs = Bs.float().view(B, K, -1, L)
         #  our ASE here ---
-        Cs = Cs.float().view(B, K, -1, L) + prompt  # (b, k, d_state, l)
+        Cs = Cs.float().view(B, K, -1, L)   # (b, k, d_state, l)
+
+        # [修改] 仅当 prompt 存在时才相加 (用于 SGN)，DSGN 时跳过
+        if prompt is not None:
+            Cs = Cs + prompt
+
         Ds = self.Ds.float().view(-1)
         As = -torch.exp(self.A_logs.float()).view(-1, self.d_state)
         dt_projs_bias = self.dt_projs_bias.float().view(-1)  # (k * d)
@@ -745,9 +758,11 @@ class Selective_Scan(nn.Module):
 
         return out_y[:, 0]
 
-    def forward(self, x: torch.Tensor, prompt, **kwargs):
-        b, l, c = prompt.shape
-        prompt = prompt.permute(0, 2, 1).contiguous().view(b, 1, c, l)
+    def forward(self, x: torch.Tensor, prompt = None, **kwargs):
+        # 只有当 prompt 有值时才进行 reshape
+        if prompt is not None:
+            b, l, c = prompt.shape
+            prompt = prompt.permute(0, 2, 1).contiguous().view(b, 1, c, l)
         y = self.forward_core(x, prompt)  # [B, L, C]
         y = y.permute(0, 2, 1).contiguous()
         return y
@@ -768,6 +783,8 @@ class AttentiveLayer(nn.Module):
                  qkv_bias=True,
                  norm_layer=nn.LayerNorm,
                  is_last=False,
+                 # [修改] 增加此参数用于接收层号
+                 scan_layer_idx=0,
                  **kwargs,
                  ):
         super().__init__()
@@ -811,6 +828,8 @@ class AttentiveLayer(nn.Module):
             num_tokens=num_tokens,
             inner_rank=inner_rank,
             mlp_ratio=mlp_ratio,
+            # [修改] 传递层号给 ASSM
+            scan_layer_idx=scan_layer_idx,
             **kwargs #新增:透传配置参数
         )
 
@@ -919,6 +938,8 @@ class BasicBlock(nn.Module):
                     qkv_bias=qkv_bias,
                     norm_layer=norm_layer,
                     is_last=i == depth - 1,
+                    # [修改] 传入当前层在Block内的索引 i
+                    scan_layer_idx=i,
                     **kwargs,#继续透传
                 )
             )
