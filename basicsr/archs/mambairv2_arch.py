@@ -117,6 +117,102 @@ class GatedMLP(nn.Module):
         return x
 
 
+class HaarDWT(nn.Module):
+    """1-level Haar DWT for feature maps."""
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # x: [B, C, H, W], H/W can be odd (caller should pad if needed)
+        x00 = x[:, :, 0::2, 0::2]
+        x01 = x[:, :, 0::2, 1::2]
+        x10 = x[:, :, 1::2, 0::2]
+        x11 = x[:, :, 1::2, 1::2]
+
+        ll = (x00 + x01 + x10 + x11) * 0.5
+        lh = (x00 - x01 + x10 - x11) * 0.5
+        hl = (x00 + x01 - x10 - x11) * 0.5
+        hh = (x00 - x01 - x10 + x11) * 0.5
+        return ll, lh, hl, hh
+
+
+class HaarIDWT(nn.Module):
+    """Inverse 1-level Haar DWT for feature maps."""
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, ll, lh, hl, hh):
+        B, C, H, W = ll.shape
+        out = torch.zeros(B, C, H * 2, W * 2, device=ll.device, dtype=ll.dtype)
+
+        out[:, :, 0::2, 0::2] = (ll + lh + hl + hh) * 0.5
+        out[:, :, 0::2, 1::2] = (ll - lh + hl - hh) * 0.5
+        out[:, :, 1::2, 0::2] = (ll + lh - hl - hh) * 0.5
+        out[:, :, 1::2, 1::2] = (ll - lh - hl + hh) * 0.5
+        return out
+
+
+class WaveletEnhanceBlock(nn.Module):
+    """
+    第一阶段版本：
+    - 1-level Haar WT
+    - 主要增强高频 LH/HL/HH
+    - LL 仅做轻投影
+    - iDWT 后残差加回输入
+    """
+    def __init__(self, dim, hf_ratio=1.0):
+        super().__init__()
+        hidden_dim = max(dim, int(dim * hf_ratio))
+
+        self.dwt = HaarDWT()
+        self.idwt = HaarIDWT()
+
+        # 低频轻投影，尽量不破坏主体结构
+        self.ll_proj = nn.Conv2d(dim, dim, 1, 1, 0)
+
+        # 高频增强：concat(LH, HL, HH) -> enhance -> split
+        self.hf_enhance = nn.Sequential(
+            nn.Conv2d(dim * 3, hidden_dim, 3, 1, 1),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1, groups=hidden_dim),
+            nn.GELU(),
+            nn.Conv2d(hidden_dim, dim * 3, 1, 1, 0),
+        )
+
+        # 重建后再做一次局部融合
+        self.fuse = nn.Conv2d(dim, dim, 3, 1, 1)
+
+    def forward(self, x):
+        identity = x
+        B, C, H, W = x.shape
+
+        # 保证 DWT 时高宽为偶数
+        pad_h = H % 2
+        pad_w = W % 2
+        if pad_h != 0 or pad_w != 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode='replicate')
+
+        ll, lh, hl, hh = self.dwt(x)
+
+        # 低频轻处理
+        ll = self.ll_proj(ll)
+
+        # 高频增强
+        hf = torch.cat([lh, hl, hh], dim=1)
+        hf = self.hf_enhance(hf)
+        lh, hl, hh = torch.chunk(hf, 3, dim=1)
+
+        # 小波重建
+        out = self.idwt(ll, lh, hl, hh)
+        out = self.fuse(out)
+
+        # 去掉 pad
+        if pad_h != 0 or pad_w != 0:
+            out = out[:, :, :H, :W]
+
+        return identity + out
+
+
 def window_partition(x, window_size):
     """
     Args:
@@ -1023,9 +1119,23 @@ class ASSB(nn.Module):
                 nn.Conv2d(dim // 4, dim // 4, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
                 nn.Conv2d(dim // 4, dim, 3, 1, 1))
 
-    def forward(self, x, x_size, params):
-        return self.patch_embed(self.conv(self.patch_unembed(self.residual_group(x, x_size, params), x_size))) + x
+        # === 新增：第一阶段的小波增强模块 ===
+        self.wavelet_enhance = WaveletEnhanceBlock(dim=dim, hf_ratio=1.0)
 
+    # def forward(self, x, x_size, params):
+    #     return self.patch_embed(self.conv(self.patch_unembed(self.residual_group(x, x_size, params), x_size))) + x
+    def forward(self, x, x_size, params):
+        feat = self.residual_group(x, x_size, params)   # [B, HW, C]
+        feat = self.patch_unembed(feat, x_size)         # [B, C, H, W]
+
+        # 第一阶段：只在 ASSB 卷积分支加入 WT 高频增强
+        feat = self.wavelet_enhance(feat)
+
+        # 原有卷积分支保留
+        feat = self.conv(feat)
+
+        feat = self.patch_embed(feat)                   # [B, HW, C]
+        return feat + x
 
 class PatchEmbed(nn.Module):
     r""" Image to Patch Embedding
