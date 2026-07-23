@@ -99,10 +99,70 @@ def save_grayscale(image_array: np.ndarray, output_path: Path) -> None:
     Image.fromarray(image_uint8).save(output_path)
 
 
-def metric_triplet(target: np.ndarray, image: np.ndarray) -> Tuple[float, float, float]:
-    rmse = float(np.sqrt(np.mean((image - target) ** 2)))
-    psnr = float(peak_signal_noise_ratio(target, image, data_range=1.0))
-    ssim = float(structural_similarity(target, image, data_range=1.0))
+def crop_metric_border(
+    image: np.ndarray,
+    border: int,
+) -> np.ndarray:
+    if border <= 0:
+        return image
+
+    height, width = image.shape
+
+    if height <= 2 * border or width <= 2 * border:
+        raise ValueError(
+            f"Image shape {image.shape} is too small "
+            f"for crop border {border}."
+        )
+
+    return image[
+        border:-border,
+        border:-border,
+    ]
+
+
+def metric_triplet(
+    target: np.ndarray,
+    image: np.ndarray,
+    border: int,
+) -> Tuple[float, float, float]:
+    target_cropped = crop_metric_border(
+        target,
+        border,
+    )
+
+    image_cropped = crop_metric_border(
+        image,
+        border,
+    )
+
+    rmse = float(
+        np.sqrt(
+            np.mean(
+                (
+                    image_cropped
+                    - target_cropped
+                )
+                ** 2
+            )
+        )
+    )
+
+    psnr = float(
+        peak_signal_noise_ratio(
+            target_cropped,
+            image_cropped,
+            data_range=1.0,
+        )
+    )
+
+    ssim = float(
+        structural_similarity(
+            target_cropped,
+            image_cropped,
+            data_range=1.0,
+        )
+    )
+
     return rmse, psnr, ssim
 
 
@@ -318,9 +378,17 @@ def main() -> None:
                 tile_batch_size=args.tile_batch_size,
             )
 
-            input_rmse, input_psnr, input_ssim = metric_triplet(target, input_image)
-            output_rmse, output_psnr, output_ssim = metric_triplet(target, prediction)
+            input_rmse, input_psnr, input_ssim = metric_triplet(
+                target=target,
+                image=input_image,
+                border=args.scale,
+            )
 
+            output_rmse, output_psnr, output_ssim = metric_triplet(
+                target=target,
+                image=prediction,
+                border=args.scale,
+            )
             name = hr_path.stem
             filename = f"{name}.png"
 
