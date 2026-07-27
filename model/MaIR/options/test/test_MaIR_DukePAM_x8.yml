@@ -1,0 +1,58 @@
+# general settings
+name: test_MaIR_DukePAM_x8
+model_type: MambaIRModel
+scale: 8
+num_gpu: 1
+manual_seed: 10
+
+datasets:
+  test_1:
+    name: Duke_PAM_valid
+    type: PairedImageDataset
+
+    dataroot_gt: /data/lgl/PAMexp/2025-CVPR-MaIR/datasets/Duke_PAM_datasets_xyraw/valid/HR_x8
+    dataroot_lq: /data/lgl/PAMexp/2025-CVPR-MaIR/datasets/Duke_PAM_datasets_xyraw/valid/LR_S8
+
+    filename_tmpl: '{}_pam88'
+
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  type: MaIR
+  upscale: 8
+  in_chans: 3
+  img_range: 1.0
+  d_state: 16
+  depths: [6, 6, 6, 6, 6, 6]
+  embed_dim: 180
+  ssm_ratio: 2.0
+  mlp_ratio: 2.5
+  upsampler: pixelshuffle
+  resi_connection: 1conv
+
+  img_size: 24
+  dynamic_ids: false
+  scan_len: 8
+
+# path
+path:
+  pretrain_network_g: /data/lgl/PAMexp/2025-CVPR-MaIR/experiments/MaIR_DukePAM_x8/models/net_g_BEST_ITER.pth
+  strict_load_g: true
+
+# validation settings
+val:
+  save_img: true
+  suffix: ~
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 8
+      test_y_channel: true
+
+    ssim:
+      type: calculate_ssim
+      crop_border: 8
+      test_y_channel: true
