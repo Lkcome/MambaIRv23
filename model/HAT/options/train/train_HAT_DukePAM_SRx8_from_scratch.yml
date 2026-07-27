@@ -1,0 +1,133 @@
+# general settings
+name: train_HAT_DukePAM_SRx8_from_scratch
+model_type: HATModel
+scale: 8
+num_gpu: 1
+manual_seed: 0
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: Duke_PAM_train_x8
+    type: PairedImageDataset
+
+    dataroot_gt: /data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/train/HR_x8
+    dataroot_lq: /data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/train/LR_S8
+
+    filename_tmpl: '{}_pam88'
+
+    io_backend:
+      type: disk
+
+    # 128 x 128 HR patch corresponds to 16 x 16 LR patch for x8
+    gt_size: 128
+
+    use_hflip: true
+    use_rot: true
+
+    # data loader
+    use_shuffle: true
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 4
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val:
+    name: Duke_PAM_valid_x8
+    type: PairedImageDataset
+
+    dataroot_gt: /data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/valid/HR_x8
+    dataroot_lq: /data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/valid/LR_S8
+
+    filename_tmpl: '{}_pam88'
+
+    io_backend:
+      type: disk
+
+
+# network structures
+network_g:
+  type: HAT
+  upscale: 8
+  in_chans: 3
+  img_size: 64
+  window_size: 16
+  compress_ratio: 3
+  squeeze_factor: 30
+  conv_scale: 0.01
+  overlap_ratio: 0.5
+  img_range: 1.
+  depths: [6, 6, 6, 6, 6, 6]
+  embed_dim: 144
+  num_heads: [6, 6, 6, 6, 6, 6]
+  mlp_ratio: 2
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'
+
+
+# path
+path:
+  pretrain_network_g: ~
+  strict_load_g: false
+  resume_state: ~
+
+
+# training settings
+train:
+  ema_decay: 0.999
+
+  optim_g:
+    type: Adam
+    lr: !!float 1e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [125000, 200000, 225000, 237500]
+    gamma: 0.5
+
+  total_iter: 250000
+  warmup_iter: -1
+
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+
+# validation settings
+val:
+  val_freq: !!float 2e4
+  save_img: false
+  pbar: true
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 8
+      test_y_channel: true
+      better: higher
+
+    ssim:
+      type: calculate_ssim
+      crop_border: 8
+      test_y_channel: true
+      better: higher
+
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 1e4
+  use_tb_logger: true
+
+  wandb:
+    project: ~
+    resume_id: ~
+
+
+# distributed training settings
+dist_params:
+  backend: nccl
+  port: 29500
