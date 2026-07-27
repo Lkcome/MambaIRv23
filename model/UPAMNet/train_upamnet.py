@@ -328,15 +328,131 @@ def build_pairs(
     return pairs
 
 
-def read_grayscale(path: Path) -> np.ndarray:
-    with Image.open(path) as image:
-        image = image.convert("L")
-        array = np.asarray(
-            image,
-            dtype=np.float32,
+def normalize_raw_image(
+    image: np.ndarray,
+) -> np.ndarray:
+    """
+    Normalize an image according to its original dtype.
+
+    Duke PAM PNG images are uint16 and must be normalized by 65535.
+    """
+    if image.dtype == np.uint8:
+        image = image.astype(np.float32) / 255.0
+
+    elif image.dtype == np.uint16:
+        image = image.astype(np.float32) / 65535.0
+
+    elif np.issubdtype(
+        image.dtype,
+        np.integer,
+    ):
+        maximum = float(
+            np.iinfo(image.dtype).max
         )
 
-    return array / 255.0
+        image = (
+            image.astype(np.float32)
+            / maximum
+        )
+
+    elif np.issubdtype(
+        image.dtype,
+        np.floating,
+    ):
+        image = image.astype(np.float32)
+
+        minimum = float(
+            np.nanmin(image)
+        )
+        maximum = float(
+            np.nanmax(image)
+        )
+
+        if minimum < 0.0 or maximum > 1.0:
+            if maximum > minimum:
+                image = (
+                    image - minimum
+                ) / (
+                    maximum - minimum
+                )
+            else:
+                image = np.zeros_like(
+                    image,
+                    dtype=np.float32,
+                )
+
+    else:
+        raise TypeError(
+            f"Unsupported image dtype: {image.dtype}"
+        )
+
+    image = np.nan_to_num(
+        image,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+    )
+
+    return np.clip(
+        image,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+
+def read_grayscale(
+    path: Path,
+) -> np.ndarray:
+    """
+    Read Duke PAM image while preserving the original bit depth.
+
+    Returns:
+        H x W float32 grayscale image in [0, 1].
+    """
+    image = cv2.imread(
+        str(path),
+        cv2.IMREAD_UNCHANGED,
+    )
+
+    if image is None:
+        raise FileNotFoundError(
+            f"Failed to read image: {path}"
+        )
+
+    image = normalize_raw_image(
+        image
+    )
+
+    if image.ndim == 3:
+        if image.shape[2] == 1:
+            image = image[..., 0]
+
+        elif image.shape[2] == 3:
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGR2GRAY,
+            )
+
+        elif image.shape[2] == 4:
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGRA2GRAY,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported image shape: {image.shape}"
+            )
+
+    if image.ndim != 2:
+        raise ValueError(
+            f"Expected grayscale image, got {image.shape}"
+        )
+
+    return np.ascontiguousarray(
+        image,
+        dtype=np.float32,
+    )
 
 
 def resize_to_match(

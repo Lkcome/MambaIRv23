@@ -4,6 +4,7 @@ import os
 import random
 from pathlib import Path
 
+import cv2
 import numpy as np
 import tensorflow as tf
 from PIL import Image
@@ -117,30 +118,160 @@ def decode_path(path_tensor):
     return path_tensor.numpy().decode("utf-8")
 
 
-def load_pair_python(lr_path_tensor, hr_path_tensor):
-    lr_path = decode_path(lr_path_tensor)
-    hr_path = decode_path(hr_path_tensor)
+def normalize_raw_image(image):
+    """
+    Normalize an image according to its original dtype.
 
-    with Image.open(lr_path) as image:
-        lr = image.convert("L")
+    Duke PAM PNG files are uint16, so they must be normalized by 65535
+    instead of being converted to 8-bit by PIL.
+    """
+    if image.dtype == np.uint8:
+        image = image.astype(np.float32) / 255.0
 
-    with Image.open(hr_path) as image:
-        hr = image.convert("L")
+    elif image.dtype == np.uint16:
+        image = image.astype(np.float32) / 65535.0
 
-    hr_width, hr_height = hr.size
-
-    # FD-Unet 输入输出尺寸一致，所以先把低分辨率图像 bicubic 上采样到 HR。
-    if lr.size != hr.size:
-        lr = lr.resize(
-            (hr_width, hr_height),
-            resample=Image.Resampling.BICUBIC,
+    elif np.issubdtype(image.dtype, np.integer):
+        image = (
+            image.astype(np.float32)
+            / float(np.iinfo(image.dtype).max)
         )
 
-    lr = np.asarray(lr, dtype=np.float32) / 255.0
-    hr = np.asarray(hr, dtype=np.float32) / 255.0
+    elif np.issubdtype(image.dtype, np.floating):
+        image = image.astype(np.float32)
 
-    lr = np.expand_dims(lr, axis=-1)
-    hr = np.expand_dims(hr, axis=-1)
+        minimum = float(np.nanmin(image))
+        maximum = float(np.nanmax(image))
+
+        if minimum < 0.0 or maximum > 1.0:
+            if maximum > minimum:
+                image = (
+                    image - minimum
+                ) / (
+                    maximum - minimum
+                )
+            else:
+                image = np.zeros_like(
+                    image,
+                    dtype=np.float32,
+                )
+
+    else:
+        raise TypeError(
+            f"Unsupported image dtype: {image.dtype}"
+        )
+
+    image = np.nan_to_num(
+        image,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+    )
+
+    return np.clip(
+        image,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+
+def read_gray_image(path):
+    """
+    Read the original PAM image without destroying uint16 precision.
+
+    Returns:
+        H x W x 1 float32 array in [0, 1].
+    """
+    image = cv2.imread(
+        str(path),
+        cv2.IMREAD_UNCHANGED,
+    )
+
+    if image is None:
+        raise FileNotFoundError(
+            f"Failed to read image: {path}"
+        )
+
+    image = normalize_raw_image(image)
+
+    if image.ndim == 3:
+        if image.shape[2] == 1:
+            image = image[..., 0]
+
+        elif image.shape[2] == 3:
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGR2GRAY,
+            )
+
+        elif image.shape[2] == 4:
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGRA2GRAY,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported image shape: {image.shape}"
+            )
+
+    if image.ndim != 2:
+        raise ValueError(
+            f"Expected grayscale image, got {image.shape}"
+        )
+
+    return np.ascontiguousarray(
+        image[..., None],
+        dtype=np.float32,
+    )
+
+def load_pair_python(
+    lr_path_tensor,
+    hr_path_tensor,
+):
+    lr_path = decode_path(
+        lr_path_tensor
+    )
+    hr_path = decode_path(
+        hr_path_tensor
+    )
+
+    lr = read_gray_image(
+        lr_path
+    )
+    hr = read_gray_image(
+        hr_path
+    )
+
+    hr_height, hr_width = hr.shape[:2]
+
+    # FD-Unet requires LR and HR to have identical spatial dimensions.
+    if lr.shape[:2] != hr.shape[:2]:
+        lr_resized = cv2.resize(
+            lr[..., 0],
+            (
+                hr_width,
+                hr_height,
+            ),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        lr = np.ascontiguousarray(
+            lr_resized[..., None],
+            dtype=np.float32,
+        )
+
+    lr = np.clip(
+        lr,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    hr = np.clip(
+        hr,
+        0.0,
+        1.0,
+    ).astype(np.float32)
 
     return lr, hr
 
@@ -416,15 +547,11 @@ class FullImageValidationCallback(tf.keras.callbacks.Callback):
         self.val_interval = val_interval
         self.best_psnr = -float("inf")
 
-    def read_gray_image(self, path):
-        with Image.open(path) as image:
-            image = image.convert("L")
-            array = np.asarray(
-                image,
-                dtype=np.float32,
-            ) / 255.0
-
-        return array[..., None]
+    def read_validation_image(
+        self,
+        path,
+    ):
+        return read_gray_image(path)
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs if logs is not None else {}
@@ -457,32 +584,31 @@ class FullImageValidationCallback(tf.keras.callbacks.Callback):
             self.valid_pairs,
             start=1,
         ):
-            lr = self.read_gray_image(lr_path)
-            hr = self.read_gray_image(hr_path)
+            lr = self.read_validation_image(lr_path)
+            hr = self.read_validation_image(hr_path)
 
             hr_height, hr_width = hr.shape[:2]
 
             # FD-Unet 输入输出同尺寸，因此先将 LR 放大到 HR 尺寸。
             if lr.shape[:2] != hr.shape[:2]:
-                lr_image = Image.fromarray(
-                    np.clip(
-                        lr[..., 0] * 255.0,
-                        0,
-                        255,
-                    ).astype(np.uint8)
+                lr_resized = cv2.resize(
+                    lr[..., 0],
+                    (
+                        hr_width,
+                        hr_height,
+                    ),
+                    interpolation=cv2.INTER_CUBIC,
                 )
 
-                lr_image = lr_image.resize(
-                    (hr_width, hr_height),
-                    resample=Image.Resampling.BICUBIC,
+                lr = np.ascontiguousarray(
+                    lr_resized[..., None],
+                    dtype=np.float32,
                 )
 
-                lr = (
-                    np.asarray(
-                        lr_image,
-                        dtype=np.float32,
-                    )[..., None]
-                    / 255.0
+                lr = np.clip(
+                    lr,
+                    0.0,
+                    1.0,
                 )
 
             prediction = tiled_predict(
