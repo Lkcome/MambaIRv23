@@ -1,0 +1,78 @@
+{
+    "task": "swinir_duke_pam_x8",
+    "model": "plain",
+    "gpu_ids": [0],
+  
+    "scale": 8,
+    "n_channels": 3,
+  
+    "path": {
+      "root": "superresolution",
+      "pretrained_netG": null,
+      "pretrained_optimizerG": null
+    },
+  
+    "datasets": {
+      "train": {
+        "name": "Duke_PAM_train_x8",
+        "dataset_type": "sr",
+        "dataroot_H": "/data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/train/HR_x8",
+        "dataroot_L": "/data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/train/LR_S8",
+        "filename_tmpl": "{}_pam88",
+        "H_size": 128,
+        "dataloader_shuffle": true,
+        "dataloader_num_workers": 16,
+        "dataloader_batch_size": 4
+      },
+  
+      "test": {
+        "name": "Duke_PAM_valid_x8",
+        "dataset_type": "sr",
+        "dataroot_H": "/data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/valid/HR_x8",
+        "dataroot_L": "/data1/like/MambaIRv21/datasets/Duke_PAM_datasets_xyraw/valid/LR_S8",
+        "filename_tmpl": "{}_pam88"
+      }
+    },
+  
+    "netG": {
+      "net_type": "swinir",
+      "upscale": 8,
+      "in_chans": 3,
+      "img_size": 16,
+      "window_size": 8,
+      "img_range": 1.0,
+  
+      "depths": [6, 6, 6, 6, 6, 6],
+      "embed_dim": 180,
+      "num_heads": [6, 6, 6, 6, 6, 6],
+      "mlp_ratio": 2,
+  
+      "upsampler": "pixelshuffle",
+      "resi_connection": "1conv",
+  
+      "init_type": "default"
+    },
+  
+    "train": {
+      "G_lossfn_type": "l1",
+      "G_lossfn_weight": 1.0,
+  
+      "G_optimizer_type": "adam",
+      "G_optimizer_lr": 0.0001,
+      "G_optimizer_wd": 0,
+      "G_optimizer_betas": [0.9, 0.99],
+  
+      "G_scheduler_type": "MultiStepLR",
+      "G_scheduler_milestones": [125000, 200000, 225000, 237500],
+      "G_scheduler_gamma": 0.5,
+  
+      "G_regularizer_orthstep": 0,
+      "G_regularizer_clipstep": 0,
+  
+      "checkpoint_test": 5000,
+      "checkpoint_save": 5000,
+      "checkpoint_print": 200,
+  
+      "manual_seed": 10
+    }
+  }
